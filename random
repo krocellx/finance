@@ -1,16 +1,162 @@
 “””
-Stationary Bootstrap (Politis-Romano 1994) for simulating return paths.
+End-to-end example. Run this to see the workflow.
 
 Workflow:
 
-1. Pass in a list/array of historical dates.
-1. Get back a matrix of bootstrapped date indices (n_paths x path_length).
-1. Use that matrix to look up returns for any strategy:
-   sim_returns = strategy_returns.values[index_matrix]
-   This gives you 1000 simulated 5-year return paths for that strategy.
+1. Provide historical daily returns for each strategy (aligned to same dates).
+1. Generate ONE scenario set (10k paths x 1260 days) — reused across everything.
+1. Define one or more stop rules.
+1. Backtest each (strategy, rule) combination.
+1. Compare results.
+   “””
 
-The same index_matrix can be reused across all 3 strategies, which keeps
-the comparison clean (all strategies see the same simulated “market history”).
+import numpy as np
+import pandas as pd
+from backtest import (
+generate_scenarios,
+NoStop,
+TrailingStopRule,
+run_backtest,
+compare,
+)
+
+# —————————————————————————
+
+# 1. Historical inputs (replace with your real data)
+
+# —————————————————————————
+
+dates = pd.bdate_range(“2006-01-01”, “2026-01-01”)
+n_history = len(dates)
+rng = np.random.default_rng(0)
+
+# Synthetic returns with some autocorrelation so Politis-White returns
+
+# something meaningful (rather than ~1 day on i.i.d. data).
+
+def ar1_returns(n, mu, sigma, phi=0.05):
+eps = rng.normal(0, sigma, n)
+r = np.zeros(n)
+for i in range(1, n):
+r[i] = mu + phi * (r[i - 1] - mu) + eps[i]
+return r
+
+historical_returns = {
+‘momentum’:    pd.Series(ar1_returns(n_history, 0.0006, 0.014, 0.10), index=dates),
+‘mean_revert’: pd.Series(ar1_returns(n_history, 0.0004, 0.009, -0.05), index=dates),
+‘vol_carry’:   pd.Series(ar1_returns(n_history, 0.0008, 0.020, 0.08),  index=dates),
+}
+
+# —————————————————————————
+
+# 2. Generate scenarios ONCE — reuse for everything
+
+# —————————————————————————
+
+print(“Generating 10,000 scenarios…”)
+scenarios = generate_scenarios(
+historical_returns=historical_returns,
+n_paths=10_000,
+path_length=1260,    # 5 business years
+L_mean=None,         # auto via Politis-White
+seed=42,
+)
+print(f”  Block length used: L_mean = {scenarios[‘L_mean’]:.1f}”)
+print(f”  Per-strategy Politis-White L: {scenarios[‘L_per_strategy’]}”)
+print(f”  Index matrix shape: {scenarios[‘idx’].shape}”)
+
+# —————————————————————————
+
+# 3. Define stop rules
+
+# —————————————————————————
+
+INITIAL_CAPITAL = 10_000_000.0  # $10m starting equity per strategy
+
+baseline = NoStop()
+
+trailing_stop = TrailingStopRule(
+levels=[
+(400_000,  0.70),  # at $400k DD: cut 30% (run at 70%)
+(1_100_000, 0.40), # at $1.1m DD: cut 60% (run at 40%)
+(2_000_000, 0.00), # at $2m DD: full stop out
+],
+reentry_recovery=300_000,  # if recover $300k from trough, step back up
+label=“Trailing-30/60/100-Reentry300k”,
+)
+
+# Easy to add variants for comparison:
+
+trailing_no_reentry = TrailingStopRule(
+levels=[
+(400_000,  0.70),
+(1_100_000, 0.40),
+(2_000_000, 0.00),
+],
+reentry_recovery=0.0,
+label=“Trailing-30/60/100-NoReentry”,
+)
+
+# —————————————————————————
+
+# 4. Backtest every (strategy, rule) combination
+
+# —————————————————————————
+
+rules = [baseline, trailing_stop, trailing_no_reentry]
+results = []
+for strat_name, paths in scenarios[‘paths’].items():
+for rule in rules:
+print(f”  Backtesting {strat_name} x {rule.name}…”)
+res = run_backtest(paths, rule, strat_name, INITIAL_CAPITAL)
+results.append(res)
+
+# —————————————————————————
+
+# 5. Compare
+
+# —————————————————————————
+
+table = compare(results)
+print(”\n” + “=” * 100)
+print(“RESULTS”)
+print(”=” * 100)
+with pd.option_context(‘display.max_columns’, None, ‘display.width’, 200,
+‘display.float_format’, ‘{:.4f}’.format):
+print(table.to_string(index=False))
+
+# Save for later analysis
+
+table.to_csv(’/home/claude/backtest_results.csv’, index=False)
+print(”\nSaved to /home/claude/backtest_results.csv”)
+
+from .simulation import (
+politis_white_L,
+stationary_bootstrap_indices,
+apply_indices,
+generate_scenarios,
+)
+from .stop_rules import StopRule, NoStop, TrailingStopRule
+from .engine import BacktestResult, run_backtest, compare
+
+**all** = [
+“politis_white_L”,
+“stationary_bootstrap_indices”,
+“apply_indices”,
+“generate_scenarios”,
+“StopRule”,
+“NoStop”,
+“TrailingStopRule”,
+“BacktestResult”,
+“run_backtest”,
+“compare”,
+]
+
+“””
+Stationary bootstrap simulation. Functional — no state worth encapsulating.
+
+Generate ONE index matrix (n_paths x path_length) and reuse across all
+strategies and stop rules for apples-to-apples comparison.
 “””
 
 import numpy as np
@@ -18,161 +164,507 @@ import pandas as pd
 from arch.bootstrap import optimal_block_length
 
 def politis_white_L(returns):
-“””
-Compute the Politis-White optimal mean block length for the
-stationary bootstrap. Run on each strategy’s returns and take
-the max (or median) across strategies as a starting point.
-“””
-opt = optimal_block_length(returns)
+“”“Politis-White optimal mean block length for the stationary bootstrap.”””
+opt = optimal_block_length(np.asarray(returns))
 return float(opt[‘stationary’].iloc[0])
 
 def stationary_bootstrap_indices(
-n_history,
-path_length,
-n_paths,
-L_mean,
-seed=None,
-):
+n_history: int,
+path_length: int,
+n_paths: int,
+L_mean: float,
+seed: int | None = None,
+) -> np.ndarray:
 “””
-Generate a matrix of bootstrapped indices into the historical series.
+Generate bootstrapped indices into the historical series.
 
 ```
-Parameters
-----------
-n_history : int
-    Number of days in your historical series (e.g., len(dates)).
-path_length : int
-    Days per simulated path. For 5 years of business days, use 1260.
-n_paths : int
-    Number of simulated paths (e.g., 1000 or 5000).
-L_mean : float
-    Target mean block length. Block lengths follow a geometric
-    distribution with mean L_mean, so jump probability p = 1 / L_mean.
-seed : int, optional
-    Random seed for reproducibility.
+Returns an int matrix of shape (n_paths, path_length). Use it to look up
+returns for any strategy: strategy_returns[idx] -> simulated paths.
 
-Returns
--------
-idx : np.ndarray of shape (n_paths, path_length), dtype int
-    Each row is one simulated path of indices into the historical series.
-    Use it to look up returns: returns_array[idx] -> simulated paths.
+Each path picks an independent random start; at every step there's a
+probability p = 1/L_mean of jumping to a fresh random point.
 """
 rng = np.random.default_rng(seed)
 p = 1.0 / L_mean
 
-# Pre-draw all randomness for speed (vectorized).
-# jumps[i, t] = True means: at day t of path i, jump to a new random start.
 jumps = rng.random((n_paths, path_length)) < p
-# Force a "jump" at t=0 so each path picks a random starting point.
-jumps[:, 0] = True
-# New starting points whenever we jump (we'll only use them where jumps is True).
+jumps[:, 0] = True  # force fresh random start at t=0 for each path
 new_starts = rng.integers(0, n_history, size=(n_paths, path_length))
 
 idx = np.empty((n_paths, path_length), dtype=np.int64)
-
-# Walk forward day-by-day. Hard to fully vectorize because each step
-# depends on the previous, but this loop is over path_length (~1260),
-# not n_paths, so it's fast.
 current = new_starts[:, 0].copy()
 idx[:, 0] = current
 for t in range(1, path_length):
-    # Where jumps[:,t] is True, take a fresh random start; else step forward.
     stepped = (current + 1) % n_history  # wraparound at end of history
     current = np.where(jumps[:, t], new_starts[:, t], stepped)
     idx[:, t] = current
-
 return idx
 ```
 
-def simulate_strategy_paths(strategy_returns, idx):
+def apply_indices(strategy_returns, idx: np.ndarray) -> np.ndarray:
 “””
-Apply the bootstrap index matrix to a strategy’s return series.
+Look up returns from a strategy using the bootstrap index matrix.
 
 ```
 Parameters
 ----------
 strategy_returns : pd.Series or np.ndarray
-    Daily returns for one strategy. Must be aligned to the same
-    historical dates used to build `idx` (same length, same order).
-idx : np.ndarray of shape (n_paths, path_length)
+    Daily returns aligned to the same historical dates used to build idx.
+idx : np.ndarray
     Output of stationary_bootstrap_indices().
 
 Returns
 -------
-paths : np.ndarray of shape (n_paths, path_length)
-    Simulated daily return paths for this strategy.
+np.ndarray of shape (n_paths, path_length): simulated daily returns.
 """
-arr = np.asarray(strategy_returns)
-if len(arr) != idx.max() + 1 and idx.max() >= len(arr):
+arr = np.asarray(strategy_returns, dtype=np.float64)
+if idx.max() >= len(arr):
     raise ValueError(
-        f"idx references position {idx.max()} but strategy_returns "
-        f"only has {len(arr)} entries. Make sure returns align with "
-        f"the dates used to build idx."
+        f"idx references position {idx.max()} but returns only have {len(arr)} entries."
     )
 return arr[idx]
 ```
 
-# —————————————————————————
-
-# Example usage
-
-# —————————————————————————
-
-if **name** == “**main**”:
-# —– Inputs you would provide —–
-# A list of historical business dates (e.g., 20 years ~ 5040 days).
-dates = pd.bdate_range(“2006-01-01”, “2026-01-01”)
-n_history = len(dates)
+def generate_scenarios(
+historical_returns: dict,
+n_paths: int = 10_000,
+path_length: int = 1260,
+L_mean: float | None = None,
+seed: int = 42,
+) -> dict:
+“””
+Top-level convenience: generate a scenario set usable across all strategies.
 
 ```
-# Three strategies' daily returns aligned to `dates`.
-# Replace these with your real data.
-rng_demo = np.random.default_rng(0)
-strategy_A = pd.Series(rng_demo.normal(0.0005, 0.012, n_history), index=dates)
-strategy_B = pd.Series(rng_demo.normal(0.0003, 0.008, n_history), index=dates)
-strategy_C = pd.Series(rng_demo.normal(0.0007, 0.018, n_history), index=dates)
+Parameters
+----------
+historical_returns : dict[str, pd.Series or np.ndarray]
+    Mapping of strategy_name -> daily return series. All series must have
+    the same length and be aligned to the same historical dates.
+n_paths : int
+    Number of simulated paths (default 10,000).
+path_length : int
+    Days per path (default 1260 ~= 5 business years).
+L_mean : float, optional
+    Mean block length. If None, computed via Politis-White (max across
+    strategies as a conservative default).
+seed : int
+    Random seed.
 
-# ----- Step 1: pick L -----
-# Run Politis-White on each strategy; take the max as a conservative default.
-L_candidates = [
-    politis_white_L(strategy_A),
-    politis_white_L(strategy_B),
-    politis_white_L(strategy_C),
-]
-print(f"Politis-White optimal L per strategy: {L_candidates}")
-L_pw = max(L_candidates)
-print(f"Using L_mean = {L_pw:.1f} (max across strategies)")
+Returns
+-------
+dict with keys:
+    'idx'              : the index matrix (n_paths x path_length)
+    'L_mean'           : the block length used
+    'L_per_strategy'   : Politis-White L for each strategy
+    'paths'            : dict[strategy_name -> ndarray of simulated returns]
+"""
+lengths = {len(np.asarray(r)) for r in historical_returns.values()}
+if len(lengths) > 1:
+    raise ValueError(f"All strategy return series must be same length, got {lengths}")
+n_history = lengths.pop()
 
-# For sensitivity analysis, you'd also run L = 20, 60, 120, 250.
-L_sensitivity = [L_pw, 20, 60, 120, 250]
+L_per_strategy = {name: politis_white_L(r) for name, r in historical_returns.items()}
+if L_mean is None:
+    L_mean = max(L_per_strategy.values())
+    L_mean = max(L_mean, 5.0)  # floor — Politis-White can return tiny values on noisy data
 
-# ----- Step 2: build the bootstrap index matrix -----
-# 5 years of business days = ~1260; 1000 paths.
-# Use the SAME idx across all strategies for an apples-to-apples comparison.
-idx = stationary_bootstrap_indices(
-    n_history=n_history,
-    path_length=1260,
-    n_paths=1000,
-    L_mean=L_pw,
-    seed=42,
+idx = stationary_bootstrap_indices(n_history, path_length, n_paths, L_mean, seed=seed)
+paths = {name: apply_indices(r, idx) for name, r in historical_returns.items()}
+
+return {
+    'idx': idx,
+    'L_mean': L_mean,
+    'L_per_strategy': L_per_strategy,
+    'paths': paths,
+}
+```
+“””
+Stop / position-sizing rules. OOP because:
+
+- You’ll have multiple rule types (trailing, fixed, ATR-based, etc.)
+- Each rule has internal state (HWM, current size, drawdown level)
+- Rules need a common interface so the engine can plug any of them in
+
+Each rule operates on ONE path at a time. The engine vectorizes over paths.
+“””
+
+from abc import ABC, abstractmethod
+from dataclasses import dataclass, field
+import numpy as np
+
+class StopRule(ABC):
+“””
+Abstract interface. A StopRule decides position size each day given
+the current equity. The engine drives it day-by-day.
+“””
+
+```
+@abstractmethod
+def reset(self, initial_capital: float) -> None:
+    """Reset internal state at the start of a new path."""
+    ...
+
+@abstractmethod
+def update(self, equity: float) -> float:
+    """
+    Called once per day AFTER the day's PnL is applied.
+    Receives current equity, returns the position size multiplier
+    for the NEXT day (1.0 = full, 0.0 = flat).
+    """
+    ...
+
+@property
+@abstractmethod
+def name(self) -> str:
+    ...
+```
+
+class NoStop(StopRule):
+“”“Baseline: always full size.”””
+
+```
+def reset(self, initial_capital: float) -> None:
+    pass
+
+def update(self, equity: float) -> float:
+    return 1.0
+
+@property
+def name(self) -> str:
+    return "NoStop"
+```
+
+@dataclass
+class TrailingStopRule(StopRule):
+“””
+HWM-based trailing stop with tiered position reductions and re-entry.
+
+```
+Drawdown is measured in dollars from the high-water mark (HWM).
+Levels are processed in ascending order of trigger_drawdown.
+
+Example matching your spec:
+    levels = [
+        (400_000, 0.70),    # at $400k DD from HWM, cut to 70% (i.e., reduce by 30%)
+        (1_100_000, 0.40),  # at $1.1m DD, cut to 40% (reduce by 60%)
+        (2_000_000, 0.00),  # at $2m DD, full stop out
+    ]
+    reentry_recovery = 300_000  # if we recover $300k from the trough,
+                                # step back up one level
+
+Re-entry logic: tracks the lowest equity reached while in a reduced state.
+If equity recovers by `reentry_recovery` dollars from that trough AND
+drawdown from HWM is now below the previous level's trigger, step back up.
+"""
+
+levels: list[tuple[float, float]]
+reentry_recovery: float = 0.0
+label: str = "TrailingStop"
+
+# Internal state — populated by reset()
+_hwm: float = field(default=0.0, init=False)
+_trough: float = field(default=0.0, init=False)
+_current_size: float = field(default=1.0, init=False)
+_current_level_idx: int = field(default=-1, init=False)  # -1 = no reduction active
+_sorted_levels: list = field(default_factory=list, init=False)
+
+def __post_init__(self):
+    # Sort levels by trigger DD ascending and validate.
+    self._sorted_levels = sorted(self.levels, key=lambda x: x[0])
+    for i in range(1, len(self._sorted_levels)):
+        if self._sorted_levels[i][1] >= self._sorted_levels[i - 1][1]:
+            raise ValueError(
+                "Position sizes must be strictly decreasing as drawdown deepens."
+            )
+
+def reset(self, initial_capital: float) -> None:
+    self._hwm = initial_capital
+    self._trough = initial_capital
+    self._current_size = 1.0
+    self._current_level_idx = -1
+
+def update(self, equity: float) -> float:
+    # Update HWM. A new high resets everything — we're back to full size.
+    if equity > self._hwm:
+        self._hwm = equity
+        self._trough = equity
+        self._current_size = 1.0
+        self._current_level_idx = -1
+        return 1.0
+
+    # Update trough (lowest equity since last HWM).
+    if equity < self._trough:
+        self._trough = equity
+
+    drawdown = self._hwm - equity
+
+    # Find the deepest level triggered by current drawdown.
+    triggered_idx = -1
+    for i, (trigger_dd, _) in enumerate(self._sorted_levels):
+        if drawdown >= trigger_dd:
+            triggered_idx = i
+        else:
+            break
+
+    # Ratchet DOWN: if we've hit a deeper level than current, reduce size.
+    if triggered_idx > self._current_level_idx:
+        self._current_level_idx = triggered_idx
+        self._current_size = self._sorted_levels[triggered_idx][1]
+        self._trough = equity  # reset trough for re-entry tracking
+
+    # Ratchet UP (re-entry): if equity has recovered enough from trough
+    # AND drawdown has retreated below the current level's trigger, step up.
+    elif self.reentry_recovery > 0 and self._current_level_idx >= 0:
+        recovery = equity - self._trough
+        if recovery >= self.reentry_recovery:
+            # Determine what level we should be at given current DD.
+            new_level_idx = -1
+            for i, (trigger_dd, _) in enumerate(self._sorted_levels):
+                if drawdown >= trigger_dd:
+                    new_level_idx = i
+                else:
+                    break
+            if new_level_idx < self._current_level_idx:
+                self._current_level_idx = new_level_idx
+                self._current_size = (
+                    1.0 if new_level_idx == -1
+                    else self._sorted_levels[new_level_idx][1]
+                )
+                self._trough = equity  # reset for next potential re-entry
+
+    return self._current_size
+
+@property
+def name(self) -> str:
+    return self.label
+```
+
+“””
+Backtest engine. Applies a StopRule to a matrix of simulated returns
+and produces equity curves + summary statistics.
+
+Vectorized over paths where possible; per-day loop is unavoidable because
+stop rules are path-dependent (state depends on history).
+“””
+
+import numpy as np
+import pandas as pd
+from dataclasses import dataclass
+from .stop_rules import StopRule, TrailingStopRule, NoStop
+
+try:
+from numba import njit
+_HAS_NUMBA = True
+except ImportError:
+_HAS_NUMBA = False
+
+# Numba-jitted fast path for TrailingStopRule (the common case).
+
+# Generic StopRule subclasses fall back to the Python loop.
+
+if _HAS_NUMBA:
+@njit(cache=True)
+def _trailing_stop_loop(returns, initial_capital,
+level_dds, level_sizes, reentry_recovery):
+n_paths, n_days = returns.shape
+n_levels = level_dds.shape[0]
+equity = np.empty((n_paths, n_days + 1))
+sizes = np.empty((n_paths, n_days))
+
+```
+    for p in range(n_paths):
+        eq = initial_capital
+        equity[p, 0] = eq
+        hwm = eq
+        trough = eq
+        cur_size = 1.0
+        cur_level = -1
+
+        for t in range(n_days):
+            sizes[p, t] = cur_size
+            eq = eq * (1.0 + cur_size * returns[p, t])
+            equity[p, t + 1] = eq
+
+            if eq > hwm:
+                hwm = eq
+                trough = eq
+                cur_size = 1.0
+                cur_level = -1
+                continue
+
+            if eq < trough:
+                trough = eq
+
+            dd = hwm - eq
+            triggered = -1
+            for i in range(n_levels):
+                if dd >= level_dds[i]:
+                    triggered = i
+                else:
+                    break
+
+            if triggered > cur_level:
+                cur_level = triggered
+                cur_size = level_sizes[triggered]
+                trough = eq
+            elif reentry_recovery > 0.0 and cur_level >= 0:
+                if eq - trough >= reentry_recovery:
+                    new_level = -1
+                    for i in range(n_levels):
+                        if dd >= level_dds[i]:
+                            new_level = i
+                        else:
+                            break
+                    if new_level < cur_level:
+                        cur_level = new_level
+                        cur_size = 1.0 if new_level == -1 else level_sizes[new_level]
+                        trough = eq
+
+    return equity, sizes
+```
+
+@dataclass
+class BacktestResult:
+strategy_name: str
+rule_name: str
+equity_curves: np.ndarray   # (n_paths, path_length + 1), starts at initial_capital
+position_sizes: np.ndarray  # (n_paths, path_length), size used each day
+initial_capital: float
+
+```
+@property
+def terminal_wealth(self) -> np.ndarray:
+    return self.equity_curves[:, -1]
+
+@property
+def total_returns(self) -> np.ndarray:
+    return self.terminal_wealth / self.initial_capital - 1.0
+
+@property
+def max_drawdowns(self) -> np.ndarray:
+    """Max drawdown per path, in dollars (from running HWM)."""
+    hwm = np.maximum.accumulate(self.equity_curves, axis=1)
+    dd = hwm - self.equity_curves
+    return dd.max(axis=1)
+
+@property
+def max_drawdown_pct(self) -> np.ndarray:
+    hwm = np.maximum.accumulate(self.equity_curves, axis=1)
+    dd_pct = (hwm - self.equity_curves) / hwm
+    return dd_pct.max(axis=1)
+
+def summary(self) -> pd.Series:
+    tr = self.total_returns
+    dd = self.max_drawdowns
+    dd_pct = self.max_drawdown_pct
+    # Annualized metrics assume path_length is in business days.
+    n_days = self.equity_curves.shape[1] - 1
+    years = n_days / 252
+    cagr = (self.terminal_wealth / self.initial_capital) ** (1 / years) - 1
+    # Sharpe from per-path daily equity returns.
+    daily_eq_returns = np.diff(self.equity_curves, axis=1) / self.equity_curves[:, :-1]
+    sharpe = daily_eq_returns.mean(axis=1) / daily_eq_returns.std(axis=1) * np.sqrt(252)
+    return pd.Series({
+        'strategy': self.strategy_name,
+        'rule': self.rule_name,
+        'mean_total_return': tr.mean(),
+        'median_total_return': np.median(tr),
+        'p05_total_return': np.percentile(tr, 5),
+        'p95_total_return': np.percentile(tr, 95),
+        'mean_cagr': cagr.mean(),
+        'mean_max_dd_$': dd.mean(),
+        'p95_max_dd_$': np.percentile(dd, 95),
+        'p99_max_dd_$': np.percentile(dd, 99),
+        'mean_max_dd_pct': dd_pct.mean(),
+        'p95_max_dd_pct': np.percentile(dd_pct, 95),
+        'mean_sharpe': sharpe.mean(),
+        'prob_loss': (tr < 0).mean(),
+        'prob_50pct_dd': (dd_pct > 0.5).mean(),
+    })
+```
+
+def run_backtest(
+strategy_returns_paths: np.ndarray,
+rule: StopRule,
+strategy_name: str,
+initial_capital: float = 10_000_000.0,
+) -> BacktestResult:
+“””
+Apply a stop rule to a matrix of simulated returns.
+
+```
+Parameters
+----------
+strategy_returns_paths : np.ndarray, shape (n_paths, path_length)
+    Daily returns for one strategy across all simulated paths.
+    Get this from simulation.generate_scenarios()['paths'][strategy_name].
+rule : StopRule
+    The position-sizing / stop rule to apply.
+strategy_name : str
+    For labeling results.
+initial_capital : float
+    Starting equity per path (default $10m).
+
+Returns
+-------
+BacktestResult
+"""
+n_paths, path_length = strategy_returns_paths.shape
+returns = np.ascontiguousarray(strategy_returns_paths, dtype=np.float64)
+
+# Fast path: NoStop is trivial.
+if isinstance(rule, NoStop):
+    equity = np.empty((n_paths, path_length + 1))
+    equity[:, 0] = initial_capital
+    equity[:, 1:] = initial_capital * np.cumprod(1.0 + returns, axis=1)
+    sizes = np.ones((n_paths, path_length))
+    return BacktestResult(strategy_name, rule.name, equity, sizes, initial_capital)
+
+# Fast path: TrailingStopRule via numba.
+if _HAS_NUMBA and isinstance(rule, TrailingStopRule):
+    sorted_levels = sorted(rule.levels, key=lambda x: x[0])
+    level_dds = np.array([l[0] for l in sorted_levels], dtype=np.float64)
+    level_sizes = np.array([l[1] for l in sorted_levels], dtype=np.float64)
+    equity, sizes = _trailing_stop_loop(
+        returns, float(initial_capital),
+        level_dds, level_sizes, float(rule.reentry_recovery),
+    )
+    return BacktestResult(strategy_name, rule.name, equity, sizes, initial_capital)
+
+# Generic fallback: Python loop, works for any StopRule subclass.
+equity = np.empty((n_paths, path_length + 1))
+equity[:, 0] = initial_capital
+sizes = np.empty((n_paths, path_length))
+
+# We need to drive the rule per-path because internal state is per-path.
+# The OUTER loop is over paths; the INNER loop is over days. This is the
+# opposite of what you'd want for pure vectorization, but stop rules
+# are inherently sequential within a path.
+#
+# For 10k paths x 1260 days this is ~12.6M rule.update() calls. On modern
+# hardware that's a few seconds for simple rules. If it ever becomes a
+# bottleneck, the trailing-stop logic could be re-implemented in numba.
+for p in range(n_paths):
+    rule.reset(initial_capital)
+    eq = initial_capital
+    size = 1.0
+    for t in range(path_length):
+        sizes[p, t] = size
+        eq = eq * (1 + size * strategy_returns_paths[p, t])
+        equity[p, t + 1] = eq
+        size = rule.update(eq)
+
+return BacktestResult(
+    strategy_name=strategy_name,
+    rule_name=rule.name,
+    equity_curves=equity,
+    position_sizes=sizes,
+    initial_capital=initial_capital,
 )
-print(f"Index matrix shape: {idx.shape}")
-
-# ----- Step 3: simulate each strategy -----
-paths_A = simulate_strategy_paths(strategy_A, idx)
-paths_B = simulate_strategy_paths(strategy_B, idx)
-paths_C = simulate_strategy_paths(strategy_C, idx)
-print(f"Strategy A paths shape: {paths_A.shape}")
-
-# ----- Step 4: now you can apply your trailing-stop rule -----
-# e.g., for each path, walk through the daily returns, track running
-# equity curve, apply 30%/60%/100% cuts at $400k/$1.1m/$2m drawdowns,
-# and record terminal wealth + max drawdown.
-
-# Quick sanity check: terminal wealth distribution
-terminal_A = (1 + paths_A).prod(axis=1)
-print(f"\nStrategy A terminal wealth (no stops applied):")
-print(f"  median: {np.median(terminal_A):.3f}")
-print(f"  5th percentile: {np.percentile(terminal_A, 5):.3f}")
-print(f"  95th percentile: {np.percentile(terminal_A, 95):.3f}")
 ```
+
+def compare(results: list[BacktestResult]) -> pd.DataFrame:
+“”“Side-by-side comparison table of multiple backtest results.”””
+return pd.DataFrame([r.summary() for r in results])
