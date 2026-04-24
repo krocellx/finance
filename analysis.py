@@ -258,6 +258,92 @@ def conditional_comparison(
 
 
 # ---------------------------------------------------------------------------
+# 3b. Sleeve combination (multi-strategy portfolio, independent stops)
+# ---------------------------------------------------------------------------
+
+def combine_sleeves(
+    results: dict,
+    strategies: Sequence[str],
+    rule_label: str,
+    capitals: dict,
+    combined_name: str = 'combined',
+) -> BacktestResult:
+    """
+    Sum per-strategy equity curves into a combined 'sleeve' result.
+
+    Each strategy is assumed to run independently with its own stop rule and
+    its own capital allocation. The combined equity curve at time t is the
+    sum of each sleeve's equity at time t, scaled to its target allocation.
+
+    Valid only when all strategies share the same scenarios (same idx) —
+    otherwise the summed curves wouldn't represent a coherent joint history.
+
+    Parameters
+    ----------
+    results : dict[(strategy, rule_label) -> BacktestResult]
+        The nested dict built by your backtest loop.
+    strategies : sequence of strategy names to combine.
+    rule_label : which rule's results to use across all strategies.
+    capitals : dict[strategy -> initial dollars]. Target allocation per sleeve.
+    combined_name : label for the output result.
+
+    Returns
+    -------
+    BacktestResult with equity_curves = sum of (scaled) per-strategy curves.
+
+    Notes
+    -----
+    - position_sizes in the returned result is a weighted-average of sleeve
+      sizes (useful for reporting but not used by most analyses).
+    - All standard analysis functions (percentile_table, cvar_table,
+      institutional_summary, paired_comparison, bootstrap_ci, etc.) work
+      directly on the returned BacktestResult.
+    - The combined drawdown reflects natural diversification between sleeves:
+      a bad day for one strategy may be offset by another, so the combined
+      max DD is usually well below the sum of per-sleeve max DDs.
+    """
+    if not strategies:
+        raise ValueError("strategies must be non-empty")
+    missing = [s for s in strategies if (s, rule_label) not in results]
+    if missing:
+        raise KeyError(f"Missing results for strategies {missing} under rule "
+                       f"'{rule_label}'")
+
+    # Validate shape alignment — all sleeves must share the scenario grid.
+    shapes = {results[(s, rule_label)].equity_curves.shape for s in strategies}
+    if len(shapes) > 1:
+        raise ValueError(f"Sleeves have mismatched shapes {shapes}; they must "
+                         f"share the same scenarios.")
+
+    total_equity = None
+    total_sizes_weighted = None
+    total_initial = 0.0
+    for s in strategies:
+        r = results[(s, rule_label)]
+        cap = capitals[s]
+        scale = cap / r.initial_capital
+        scaled_eq = r.equity_curves * scale       # (n_paths, n_days + 1)
+        weight = cap                               # weight per sleeve in $ terms
+        if total_equity is None:
+            total_equity = scaled_eq.copy()
+            total_sizes_weighted = r.position_sizes * weight
+        else:
+            total_equity += scaled_eq
+            total_sizes_weighted += r.position_sizes * weight
+        total_initial += cap
+
+    avg_sizes = total_sizes_weighted / total_initial
+
+    return BacktestResult(
+        strategy_name=combined_name,
+        rule_name=rule_label,
+        equity_curves=total_equity,
+        position_sizes=avg_sizes,
+        initial_capital=total_initial,
+    )
+
+
+# ---------------------------------------------------------------------------
 # 4. Paired comparison and significance
 # ---------------------------------------------------------------------------
 
