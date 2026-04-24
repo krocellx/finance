@@ -14,10 +14,29 @@ advantage is robust or an artifact of specific parameter choices.
 from __future__ import annotations
 import numpy as np
 import pandas as pd
-from typing import Sequence, Callable
+from typing import Sequence, Callable, Union
 from .simulation import generate_scenarios
 from .stop_rules import StopRule, TrailingStopRule, NoStop
 from .engine import run_backtest, BacktestResult
+
+
+CapitalSpec = Union[float, dict]
+
+
+def _resolve_capitals(initial_capital: CapitalSpec,
+                      strategies) -> dict:
+    """
+    Normalize initial_capital into a dict[strategy -> float] lookup.
+
+    - float: broadcast the same capital to every strategy
+    - dict:  pass-through, but validate it covers every strategy
+    """
+    if isinstance(initial_capital, dict):
+        missing = [s for s in strategies if s not in initial_capital]
+        if missing:
+            raise KeyError(f"initial_capital dict missing strategies: {missing}")
+        return {s: float(initial_capital[s]) for s in strategies}
+    return {s: float(initial_capital) for s in strategies}
 
 
 def sensitivity_to_L(
@@ -27,7 +46,7 @@ def sensitivity_to_L(
     baseline_factory: Callable[[], StopRule] = NoStop,
     n_paths: int = 10_000,
     path_length: int = 1260,
-    initial_capital: float = 10_000_000.0,
+    initial_capital: float | dict = 10_000_000.0,
     seed: int = 42,
 ) -> pd.DataFrame:
     """
@@ -40,10 +59,17 @@ def sensitivity_to_L(
     Rules are passed as FACTORIES (callables returning a fresh rule instance)
     because rules carry state and must be re-created for each backtest.
 
-    Use this to check whether the stop's advantage is stable across L. If
-    the advantage flips sign as L varies, the rule is exploiting an artifact
-    of the assumed persistence structure rather than a real phenomenon.
+    Parameters
+    ----------
+    initial_capital : float or dict[str, float]
+        If float, the same capital is used for every strategy (back-compat).
+        If dict, it must contain an entry for every strategy in
+        `historical_returns`; each strategy runs at its own capital. This
+        matches the main analysis when stop thresholds are absolute dollars
+        and capital differs across strategies.
     """
+    cap_lookup = _resolve_capitals(initial_capital, historical_returns)
+
     rows = []
     for L in L_values:
         scenarios = generate_scenarios(
@@ -54,9 +80,10 @@ def sensitivity_to_L(
             seed=seed,
         )
         for strat_name, paths in scenarios['paths'].items():
+            cap = cap_lookup[strat_name]
             for factory in (baseline_factory, rule_factory):
                 rule = factory()
-                res = run_backtest(paths, rule, strat_name, initial_capital)
+                res = run_backtest(paths, rule, strat_name, cap)
                 s = res.summary()
                 s['L_mean'] = L
                 rows.append(s)
@@ -68,7 +95,7 @@ def sensitivity_to_rule_params(
     level_variants: Sequence[tuple],
     reentry_variants: Sequence[float],
     baseline: BacktestResult = None,
-    initial_capital: float = 10_000_000.0,
+    initial_capital: CapitalSpec = 10_000_000.0,
 ) -> pd.DataFrame:
     """
     Sweep trailing-stop parameters against a fixed scenario set.
@@ -88,6 +115,9 @@ def sensitivity_to_rule_params(
             ]
     reentry_variants : list of float
         Re-entry recovery amounts to try. Example: [0, 200_000, 300_000, 500_000].
+    initial_capital : float or dict[str, float]
+        If float, the same capital applies to every strategy (back-compat).
+        If dict, must contain an entry for every strategy in scenario_paths.
 
     Returns
     -------
@@ -97,6 +127,8 @@ def sensitivity_to_rule_params(
     base params look great but ±25% variants look terrible, you've overfit
     to arbitrary thresholds.
     """
+    cap_lookup = _resolve_capitals(initial_capital, scenario_paths)
+
     rows = []
     for i, levels in enumerate(level_variants):
         for reentry in reentry_variants:
@@ -106,7 +138,8 @@ def sensitivity_to_rule_params(
                     reentry_recovery=reentry,
                     label=f'variant{i}_re{int(reentry/1000)}k',
                 )
-                res = run_backtest(paths, rule, strat_name, initial_capital)
+                res = run_backtest(paths, rule, strat_name,
+                                   cap_lookup[strat_name])
                 s = res.summary()
                 s['variant_idx'] = i
                 s['levels'] = str(levels)
@@ -118,7 +151,7 @@ def sensitivity_to_rule_params(
 def sensitivity_to_capital(
     scenario_paths: dict,
     rule_factory: Callable[[], StopRule],
-    capital_values: Sequence[float],
+    capital_values: Sequence[CapitalSpec],
     baseline_factory: Callable[[], StopRule] = NoStop,
 ) -> pd.DataFrame:
     """
@@ -128,14 +161,34 @@ def sensitivity_to_capital(
     differently at $5m vs $20m starting capital. If the rule's relative
     advantage collapses at higher capital, the thresholds are sized for a
     specific account size and won't scale.
+
+    Parameters
+    ----------
+    capital_values : sequence of float or dict
+        Each entry defines one capital configuration to test. A float is
+        broadcast to every strategy. A dict must contain an entry for every
+        strategy and defines per-strategy capital (useful for sweeping
+        allocation shapes, e.g. 0.5x / 1x / 2x of a base allocation).
+
+    Returns
+    -------
+    DataFrame with a row per (capital_config, strategy, rule). Float inputs
+    appear in the 'initial_capital' column as a number; dict inputs use a
+    string repr so you can identify configurations in later pivot tables.
     """
     rows = []
-    for cap in capital_values:
+    for cap_spec in capital_values:
+        cap_lookup = _resolve_capitals(cap_spec, scenario_paths)
+        # Label this capital configuration. For floats we keep the number
+        # so pivots still work numerically; for dicts we use a repr string.
+        cap_label = cap_spec if not isinstance(cap_spec, dict) else str(cap_spec)
         for strat_name, paths in scenario_paths.items():
             for factory in (baseline_factory, rule_factory):
                 rule = factory()
-                res = run_backtest(paths, rule, strat_name, cap)
+                res = run_backtest(paths, rule, strat_name,
+                                   cap_lookup[strat_name])
                 s = res.summary()
-                s['initial_capital'] = cap
+                s['initial_capital'] = cap_label
+                s['initial_capital_strat'] = cap_lookup[strat_name]
                 rows.append(s)
     return pd.DataFrame(rows)
