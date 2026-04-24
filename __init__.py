@@ -10,7 +10,7 @@ from .analysis import (
     percentile_table, cvar, cvar_table,
     plot_distribution_overlay,
     time_under_water, recovery_times, drawdown_summary,
-    conditional_comparison,
+    conditional_comparison, combine_sleeves,
     paired_comparison, bootstrap_ci,
 )
 from .sensitivity import (
@@ -40,7 +40,7 @@ __all__ = [
     "percentile_table", "cvar", "cvar_table",
     "plot_distribution_overlay",
     "time_under_water", "recovery_times", "drawdown_summary",
-    "conditional_comparison",
+    "conditional_comparison", "combine_sleeves",
     "paired_comparison", "bootstrap_ci",
     # sensitivity
     "sensitivity_to_L", "sensitivity_to_rule_params", "sensitivity_to_capital",
