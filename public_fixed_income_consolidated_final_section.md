@@ -31,6 +31,43 @@ Concentration should be reported separately by rating and legal wrapper. An unse
 
 Sources: [J.P. Morgan, *AI Capex 2.0*, pp. 32–41](<research/JP_Morgan-AI_Capex_2_0_If_You_Build_It_They_Will_Finance_It_Updated_Forecasts-2026-06-17.pdf>); [Morgan Stanley, *Data Center/AI Financing: Investor Feedback*, pp. 1–16](<research/Morgan_Stanley-US_Corporate_and_Securitized_Credit_Data_Center_AI_Financing_Investor_Feedback-2026-07-13.pdf>); [Morgan Stanley, *Mapping Software Exposure in Leveraged Credit*, pp. 1–15](<research/Morgan_Stanley-Global_Credit_and_CLO_Strategy_Mapping_Software_Exposure_in_Leveraged_Credit-2026-02-09.pdf>); [Structured Finance Association, July 2026](https://structuredfinance.org/wp-content/uploads/2026/07/SFA-Research-Corner_How-Data-Center-ABS-and-CMBS-Fit-in-a-Broader-Financing-Ecosystem.pdf).
 
+### Cross-referencing the 6.2%
+
+The 6.2% carries the most weight in this section and is the least directly verifiable, because J.P. Morgan does not publish the constituent list. It is not, however, uncorroborated. Four independent checks bear on it.
+
+**1. An independent house, a different method, the same level.** Morgan Stanley reports that "AI-level factor exposure across the IG market has gone from below 3% to slightly over **6%** this year" ([*A Break from the Heat*, p. 7](<research/Morgan_Stanley-US_Credit_Strategy_A_Break_from_the_Heat_For_Now-2026-08-14.pdf>)). This is built from ICE data as a *factor* exposure, not from an issuer list, and it is not derived from J.P. Morgan's work. Two houses using different constructions on different index data land within 0.2pp. **This is the strongest cross-reference available.**
+
+**2. The hyperscaler core is name-verifiable across two index providers.** Roughly two-thirds to three-quarters of the 6.2% is five or six named issuers whose weights are printed by both J.P. Morgan (JULI) and Apollo (Bloomberg):
+
+| Issuer | JULI, Jun-26 | Bloomberg, Jul-26 | Difference |
+|---|---:|---:|---:|
+| Alphabet | 0.55% | 0.6% | +0.05pp |
+| Amazon | 1.02% | 1.2% | +0.18pp |
+| Meta | 0.92% | 1.0% | +0.08pp |
+| Microsoft | 0.37% | 0.3% | −0.07pp |
+| Oracle | 1.29% | 1.3% | +0.01pp |
+| **Five-name total** | **4.15%** | **4.4%** | **+0.25pp** |
+| SpaceX | not in JULI | 0.3% | — |
+| **Apollo's printed hyperscaler total** | — | **4.8%** | — |
+
+Sources: [J.P. Morgan, Figure 37](<research/JP_Morgan-AI_Capex_2_0_If_You_Build_It_They_Will_Finance_It_Updated_Forecasts-2026-06-17.pdf>); [Apollo, Exhibit 27](<research/2026-midyear-credit-outlook.pdf>). The 0.25pp gap on identical names is the **benchmark-universe effect** — it bounds how much of the uncertainty in 6.2% comes from the choice of index rather than the choice of cohort, and it is small.
+
+**3. That leaves a small, bounded residual.** Netting the named core off the 6.2% leaves the data-centre and semiconductor component:
+
+| Hyperscaler basis | Residual: data centres + semis |
+|---|---:|
+| JULI five names, 4.15% | **2.05pp** (~$193bn on C0A0) |
+| Bloomberg five names, 4.4% | 1.80pp (~$169bn) |
+| Bloomberg six incl. SpaceX, 4.7% | 1.50pp (~$141bn) |
+
+**Only this 1.5–2.1pp is genuinely unverified.** It is also the part most exposed to definitional drift, since "AI semiconductors" has no standard boundary and data-centre construction bonds are largely *outside* standard indices — Morgan Stanley counts at least $53bn of investment-grade data-centre construction debt as off-index, which should therefore **not** appear in the 6.2%.
+
+**4. The move from 3.9% to 6.2% is consistent with observed issuance.** J.P. Morgan's own cohort issuance was $138bn in 2025 and $165bn through mid-June 2026, roughly $303bn combined. Depending on the end-2024 index level, that implies a flow-to-stock conversion of **83–89%** — the same order as the **~80%** independently computed for high yield in §3.2 from entirely different figures. Two sleeves, two datasets, one conversion rate.
+
+A reconstruction of Figure 28's stacked bars (not a printed decomposition) puts the $165bn of 2026 year-to-date issuance at roughly **$121bn hyperscalers, $18bn data centres and $26bn semiconductors**, consistent with the text's statement that 2025 hyperscaler USD supply was $107bn against a $150bn full-year 2026 forecast. The flow split of about three-quarters hyperscaler matches the stock split implied above.
+
+**What would close the gap.** With C0A0 constituent data, the five or six named hyperscalers can be priced directly, verifying roughly two-thirds of the 6.2% without any reliance on J.P. Morgan. The residual would then be the only judgement item, and it could be bounded by computing the C0A0 weight of Technology plus data-centre REITs — the narrow cohort must sit inside that envelope. This is listed as input 5 in §3.5.
+
 The apparent current-number conflict is therefore mostly definitional:
 
 - **4.15%** is five named issuers; **6.2%** adds direct data-centre and semiconductor borrowers; **15.5%** adds the enabling ecosystem. These are nested measures, not estimates to average or add.
@@ -265,14 +302,25 @@ This is the destination for both the investment-grade residual — Apollo's >$1t
 | 1 | **C0A0 dirty and par MV, Aug-2026** | IG $D_0$ | ±$1tn on $D_0$ moves the 2030 IG result ~1.2pp | **Dirty MV received ($9.4tn). Par MV still needed for basis check** |
 | 2 | **H0A0 market value, Aug-2026** | HY $D_0$ | Replaces the $1,447bn back-solve | **Outstanding** |
 | 2b | **Largest single-issuer weight in C0A0** | Validates $D_0$ | Discriminates between a $7.2tn and $9.4tn index universe. If ~1.9%, the MS rescaling is overstated | **Outstanding — highest priority** |
-| 3 | **C0A0 MV time series** | IG $g$ | g 3% → 5% moves the IG result ~1.0pp | **Outstanding** |
-| 4 | **H0A0 MV time series** | HY $g$ | Currently held at 3% | **Outstanding** |
-| 5 | Cohort constituent list on C0A0 | $W_0$ | Would replace J.P. Morgan's unpublished 6.2% with a computed weight | Not available from any source |
+| 3 | **C0A0 MV at an earlier date** (end-2024 preferred) | IG $g$ | g 3% → 5% moves the IG result ~1.0pp | **Outstanding** |
+| 4 | **H0A0 MV at end-2025** | HY $g$ | Currently held at 3% | **Outstanding** |
+| 5 | C0A0 weights for the 5–6 named hyperscalers, plus Technology and DC-REIT sector weights | $W_0$ | Would verify ~two-thirds of the 6.2% directly and bound the 1.5–2.1pp residual | **Computable from your data — see §1** |
 | 6 | Graduation rate, HY → IG / ABS | HY $N$ | **Drives the entire 6–12% high-yield range** | Not quantified by any source |
 | 7 | Deal-level index-eligibility schedule | Route C | Would replace the 35–55% eligibility band | Not available from any source |
 | 8 | Goldman *How AI Debt Is Reshaping Credit Markets* transcript | Single-name check | Would move the $510bn from corroborated to verified | Primary page returns HTTP 403 |
 
-The workbook [`ai_reponse/ai-credit-forward-scenarios.xlsx`](<ai_reponse/ai-credit-forward-scenarios.xlsx>) holds every input above as a live cell. Inputs 1–4 are colour-coded for update; all downstream results recalculate automatically.
+**A note on $g$, because the distinction is easy to lose.** $g$ is the growth rate of the **non-AI remainder**, not of the whole index. Total benchmark growth is non-AI growth *plus* AI growth, and AI growth already enters the model through $N$. Using total index CAGR for $g$ would therefore count AI supply twice — once in the numerator via $N$, once in the denominator via $g$ — and would *understate* the 2030 AI weight by roughly 0.7pp. The non-AI rate is recoverable from two index observations plus the AI weight at each date:
+
+$$
+g=\left[rac{D_{t}\left(1-W_{t}
+ight)}{D_{t-n}\left(1-W_{t-n}
+ight)}
+ight]^{1/n}-1
+$$
+
+Both weights are already sourced — 6.2% now and 3.9% at end-2024 ([J.P. Morgan, p. 32](<research/JP_Morgan-AI_Capex_2_0_If_You_Build_It_They_Will_Finance_It_Updated_Forecasts-2026-06-17.pdf>)) — so the only missing term is one earlier C0A0 market value. A caution on window length: a 2024–26 window spans a record issuance period and will overstate steady-state growth; a five- to ten-year window on **par** value is the better estimator, since market value embeds the 2022 rate selloff.
+
+The workbook [`ai_reponse/ai-credit-forward-scenarios.xlsx`](<ai_reponse/ai-credit-forward-scenarios.xlsx>) holds every input above as a live cell and implements this calculation directly: supply one earlier index value and $g$ computes itself for both sleeves. Until then it falls back to the 3–5% placeholder band on which the published figures rest.
 
 ## 4. Evidence, assumptions and remaining gaps
 
